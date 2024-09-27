@@ -1,0 +1,155 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  TableName:
+    Type: String
+    Default: MyUserTable
+    Description: Enter the name for the DynamoDB table
+  ApiName:
+    Type: String
+    Default: MyUserApi
+    Description: Enter the name for the API Gateway
+Resources:
+  MyUserTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref TableName
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: '5'
+        WriteCapacityUnits: '5'
+  CreateUserLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            const AWS = require('aws-sdk');
+            const dynamoDB = new AWS.DynamoDB.DocumentClient();
+            
+            const params = {
+              TableName: event.TableName,
+              Item: event.body
+            };
+            
+            await dynamoDB.put(params).promise();
+            
+            return {
+              statusCode: 200,
+              body: 'User created successfully'
+            };
+          };
+      Runtime: nodejs20.x
+  GetUserLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          exports.handler = async (event) => {
+            const AWS = require('aws-sdk');
+            const dynamoDB = new AWS.DynamoDB.DocumentClient();
+            
+            const params = {
+              TableName: event.TableName,
+              Key: {
+                id: event.pathParameters.id
+              }
+            };
+            
+            const data = await dynamoDB.get(params).promise();
+            
+            return {
+              statusCode: 200,
+              body: JSON.stringify(data.Item)
+            };
+          };
+      Runtime: nodejs20.x
+  MyUserApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Ref ApiName
+  CreateUserRootResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt MyUserApiGateway.RootResourceId
+      RestApiId: !Ref MyUserApiGateway
+      PathPart: 'create'
+  CreateUserResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt CreateUserRootResource.ResourceId
+      RestApiId: !Ref MyUserApiGateway
+      PathPart: 'user'
+  GetUserRootResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt MyUserApiGateway.RootResourceId
+      RestApiId: !Ref MyUserApiGateway
+      PathPart: 'get'
+  GetUserResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt GetUserRootResource.ResourceId
+      RestApiId: !Ref MyUserApiGateway
+      PathPart: 'user'
+  GetUserByIdResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt GetUserResource.ResourceId
+      RestApiId: !Ref MyUserApiGateway
+      PathPart: '{id}'
+  CreateUserApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: POST
+      ResourceId: !GetAtt CreateUserResource.ResourceId
+      RestApiId: !Ref MyUserApiGateway
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CreateUserLambdaFunction.Arn}/invocations"
+  GetUserApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: GET
+      ResourceId: !GetAtt GetUserByIdResource.ResourceId
+      RestApiId: !Ref MyUserApiGateway
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GetUserLambdaFunction.Arn}/invocations"
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: LambdaDynamoDBPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:GetItem'
+                Resource: '*'
+Outputs:
+  ApiEndpoint:
+    Description: "Endpoint URL for User API"
+    Value: !Sub "https://${MyUserApiGateway}.execute-api.${AWS::Region}.amazonaws.com"
